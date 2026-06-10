@@ -119,24 +119,52 @@ def webhook():
         # 1. 取得使用者在 Dialogflow 輸入的原始文字
         user_query = req["queryResult"]["queryText"]
         
-        # 2. 設定嚴格的防線與參考連結注入
+        # 2. 啟動 HoYoLAB 官方社群即時爬蟲，抓取 6.X 版本最直接的最新數據
+        hoyolab_data = ""
+        try:
+            # 爬取你提供的 HoYoLAB 官方熱門討論區
+            hoyolab_url = "https://www.hoyolab.com/circles/2/27/official?page_type=27&page_sort=hot"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7"
+            }
+            
+            response = requests.get(hoyolab_url, headers=headers, timeout=5)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, "html.parser")
+                
+                # 抓取討論區中的文章卡片標題與內文摘要（依據 HoYoLAB 結構解析文字）
+                # 這裡會打包前 5 篇熱門官方公告與攻略數據
+                posts = soup.find_all(text=True)
+                text_pool = []
+                for text in posts:
+                    cleaned = text.strip()
+                    # 過濾掉沒意義的程式碼或空白，只留下有意義的文字
+                    if len(cleaned) > 15 and any(k in cleaned for k in ["原神", user_query, "版本", "攻略", "角色"]):
+                        text_pool.append(cleaned)
+                
+                # 將爬到的最新數據組合成文字塊（限制字數避免爆量）
+                hoyolab_data = "\n".join(text_pool[:8])
+        except Exception as crawl_err:
+            print(f"HoYoLAB 即時數據爬取失敗: {crawl_err}")
+    
+        # 3. 設定系統指令，將爬到的最新第一手數據「注入」給 Gemini
         instruction_text = (
-            "你是一位專注於《原神》(Genshin Impact) 的專業智慧助理。\n\n"
-            "【核心規則】\n"
-            "1. 你只能回答與《原神》遊戲有關的問題（例如：角色、聖遺物、配隊、任務、素材等）。\n"
-            "2. 如果使用者的提問與《原神》完全無關（例如：靜宜大學、數學題、其他生活問題），"
-            "請一律禮貌地拒絕回答，並引導使用者詢問原神相關內容。\n"
-            "3. 當你完整回答完原神相關的攻略或角色問題後，**必須在回答的最後換行附上 1~2 個最相關的參考連結網址**。\n\n"
-            "【你只能從以下核准的網址中挑選附上，絕對不能自己虛構網址】：\n"
+            "你是一位專注於《原神》(Genshin Impact) 的專業智慧助理。\n"
+            "目前遊戲已經更新到了全新的 6.X 版本。請注意，使用者的提問必須與原神相關，若完全無關請禮貌拒絕並引導詢問原神。\n\n"
+            "【核心任務】\n"
+            "請參考下方透過網絡爬蟲『直接從 HoYoLAB 官方社群抓取的最新一手數據與熱門資訊』進行分析，"
+            "精準回答使用者關於 6.X 最新版本的角色數據、聖遺物與配隊問題。如果爬蟲數據中有提到該角色，請務必以爬蟲數據為優先回答！\n\n"
+            "【從 HoYoLAB 官方社群爬取的最新生鮮數據】：\n"
+            f"{hoyolab_data if hoyolab_data else '（未能成功抓取到即時網頁，請嘗試用你已知的最新原神知識回答）'}\n\n"
+            "【必須附上的參考連結】：\n"
             "- 原神官方網站: https://genshin.hoyoverse.com/\n"
-            "- HoYoLAB 官方社區 (有戰績與大地圖): https://www.hoyolab.com/\n"
-            "- 巴哈姆特原神哈啦板 (台灣最大討論區): https://forum.gamer.com.tw/A.php?bsn=36730\n"
-            "- 原神 Wiki (萌娘百科): https://zh.moegirl.org.cn/原神\n"
-            "- 特玩網原神專區 (詳細配隊聖遺物): http://www.te5.com/yuanshen/\n\n"
-            "【輸出格式範例】\n"
-            "（你生成的攻略內容...）\n\n"
+            "- HoYoLAB 官方社區: https://www.hoyolab.com/\n"
+            "- 常用攻略討論版: https://forum.gamer.com.tw/A.php?bsn=36730\n\n"
+            "【輸出格式】\n"
+            "（詳細的原神攻略內容...）\n\n"
             "💡 想要了解更多嗎？可以參考以下連結喔：\n"
-            "- [網站名稱](網址)"
+            "- [HoYoLAB 官方社群](https://www.hoyolab.com/circles/2/27/official?page_type=27&page_sort=hot)"
         )
         
         ai_config = types.GenerateContentConfig(
@@ -145,7 +173,7 @@ def webhook():
         )
         
         try:
-            # 3. 丟給 Gemini 產生回應
+            # 4. 送給 Gemini 結合爬蟲資料生成最終回應
             response = client.models.generate_content(
                 model='gemini-3.1-flash-lite',
                 contents=user_query,
@@ -154,7 +182,7 @@ def webhook():
             if response.text:
                 info = response.text
             else:
-                info = "抱歉，派蒙現在沒辦法處理這個問題，請稍後再試。"
+                info = "抱歉，派蒙現在沒抓到最新的社群數據，請稍後再試。"
         except Exception as e:
             info = f"發生錯誤: {str(e)}"
             
