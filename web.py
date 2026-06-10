@@ -116,35 +116,39 @@ def webhook():
 
 
     elif (action == "input.unknown"):
-    # 讓 Dialogflow 的 Fallback 完全複製網頁版的行為，毫無保留地問 Gemini
-    try:
-        response = client.models.generate_content(
-            model='gemini-3.1-flash-lite',
-            contents=req["queryResult"]["queryText"], # 抓取使用者在 Dialogflow 輸入的字
-        )
-        if response.text:
-            info = response.text
-        else:
-            info = "抱歉，我現在無法生成回應，請稍後再試。"
-    except Exception as e:
-        info = f"發生錯誤: {str(e)}"
+        # 1. 取得使用者在 Dialogflow 輸入的原始文字
+        user_query = req["queryResult"]["queryText"]
         
-    return make_response(jsonify({"fulfillmentText": info}))
-
-        response = client.models.generate_content(
-            model='gemini-3.1-flash-lite', 
-            contents=req["queryResult"]["queryText"],
-            config=ai_config,
+        # 2. 設定嚴格的防線：規定 Gemini 只能回答原神相關問題
+        instruction_text = (
+            "你是一位專注於《原神》(Genshin Impact) 的專業智慧助理。\n"
+            "【核心規則】\n"
+            "1. 你只能回答與《原神》遊戲有關的問題（例如：角色、聖遺物、配隊、任務、劇情、素材等）。\n"
+            "2. 如果使用者的提問與《原神》完全無關（例如：靜宜大學、數學題、寫程式、其他遊戲或現實生活問題），"
+            "請一律禮貌地拒絕回答，並引導使用者詢問原神相關內容。例如回覆：『抱歉，我是原神專屬助理，只能回答與原神相關的問題喔！請問你想查詢哪位角色呢？』\n"
+            "3. 如果是原神相關問題，請詳細且完整地提供攻略與解答。"
         )
-
-        if response.text:
-            info = response.text
-        else:
-            info = "抱歉，我現在無法生成回應，請稍後再試。"
-
-
-
-    return make_response(jsonify({"fulfillmentText": info}))
+        
+        ai_config = types.GenerateContentConfig(
+            max_output_tokens=1000, # 提高字數限制，讓攻略呈現更完整
+            system_instruction=instruction_text
+        )
+        
+        try:
+            # 3. 丟給 Gemini 產生回應
+            response = client.models.generate_content(
+                model='gemini-3.1-flash-lite',
+                contents=user_query,
+                config=ai_config,
+            )
+            if response.text:
+                info = response.text
+            else:
+                info = "抱歉，派蒙現在沒辦法處理這個問題，請稍後再試。"
+        except Exception as e:
+            info = f"發生錯誤: {str(e)}"
+            
+        return make_response(jsonify({"fulfillmentText": info}))
 
 
 @app.route("/rate")
