@@ -119,24 +119,57 @@ def webhook():
         # 1. 取得使用者在 Dialogflow 輸入的原始文字
         user_query = req["queryResult"]["queryText"]
         
-        # 2. 設定嚴格的防線與參考連結注入
+        # 2. 啟動深度爬蟲：直接抓取攻略網站的內文數據
+        direct_data = ""
+        try:
+            # 使用特玩網的內部搜尋，直接鎖定原神角色數據
+            search_url = f"http://www.te5.com/index.php?m=search&c=index&a=init&typeid=1&q=原神+{user_query}"
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+            
+            search_res = requests.get(search_url, headers=headers, timeout=5)
+            if search_res.status_code == 200:
+                search_soup = BeautifulSoup(search_res.text, "html.parser")
+                # 尋找第一個搜尋結果的精準文章連結
+                first_link = search_soup.find("div", class_="search-list")
+                if first_link and first_link.find("a"):
+                    target_url = first_link.find("a").get("href")
+                    
+                    # 【關鍵步驟】直接點進去該篇 6.X 攻略文章爬取整頁直接數據
+                    page_res = requests.get(target_url, headers=headers, timeout=5)
+                    if page_res.status_code == 200:
+                        page_soup = BeautifulSoup(page_res.text, "html.parser")
+                        # 抓取文章主體內容（通常包含聖遺物數據、數值推薦、新版本配隊）
+                        content_div = page_soup.find("div", class_="content")
+                        if content_div:
+                            # 唯獨抓取前 1500 個字（最精準的角色面板與數據核心）
+                            direct_data = content_div.text.strip()[:1500]
+        except Exception as crawl_err:
+            print(f"深度直接數據爬蟲失敗: {crawl_err}")
+    
+        # 3. 備用防線：如果特玩網沒抓到，改用 Google 即時生鮮摘要補字
+        if not direct_data:
+            try:
+                google_url = f"https://www.google.com/search?q=原神+{user_query}+最新攻略"
+                g_res = requests.get(google_url, headers=headers, timeout=4)
+                if g_res.status_code == 200:
+                    g_soup = BeautifulSoup(g_res.text, "html.parser")
+                    snippets = g_soup.find_all("div", class_="VwiC3b")
+                    direct_data = "\n".join([s.text for s in snippets[:3]])
+            except:
+                pass
+    
+        # 4. 設定系統指令，強迫 Gemini 必須根據爬到的「第一手生鮮數據」來回答
         instruction_text = (
-            "你是一位專注於《原神》(Genshin Impact) 的專業智慧助理。\n\n"
-            "【核心規則】\n"
-            "1. 你只能回答與《原神》遊戲有關的問題（例如：角色、聖遺物、配隊、任務、素材等）。\n"
-            "2. 如果使用者的提問與《原神》完全無關（例如：靜宜大學、數學題、其他生活問題），"
-            "請一律禮貌地拒絕回答，並引導使用者詢問原神相關內容。\n"
-            "3. 當你完整回答完原神相關的攻略或角色問題後，**必須在回答的最後換行附上 1~2 個最相關的參考連結網址**。\n\n"
-            "【你只能從以下核准的網址中挑選附上，絕對不能自己虛構網址】：\n"
-            "- 原神官方網站: https://genshin.hoyoverse.com/\n"
-            "- HoYoLAB 官方社區 (有戰績與大地圖): https://www.hoyolab.com/\n"
-            "- 巴哈姆特原神哈啦板 (台灣最大討論區): https://forum.gamer.com.tw/A.php?bsn=36730\n"
-            "- 原神 Wiki (萌娘百科): https://zh.moegirl.org.cn/原神\n"
-            "- 特玩網原神專區 (詳細配隊聖遺物): http://www.te5.com/yuanshen/\n\n"
-            "【輸出格式範例】\n"
-            "（你生成的攻略內容...）\n\n"
-            "💡 想要了解更多嗎？可以參考以下連結喔：\n"
-            "- [網站名稱](網址)"
+            "你是一位專注於《原神》(Genshin Impact) 的專業智慧助理。\n"
+            "目前遊戲已更新至 6.X 以上的全新版本。請注意，使用者的提問必須與原神相關，若無關請禮貌拒絕。\n\n"
+            "【核心任務】\n"
+            "請根據下方透過網絡爬蟲『直接從攻略網站抓取的最新一手的生鮮數據』進行分析與整理，"
+            "精準回答使用者提問的 6.X 版本最新角色數據、天賦、聖遺物與配隊。不要瞎掰，完全以爬蟲數據為準！\n\n"
+            "【爬蟲抓取的最新一手生鮮數據】：\n"
+            f"{direct_data if direct_data else '（未能抓取到即時網頁，請嘗試用你已知的最新原神知識回答）'}\n\n"
+            "【必填參考連結】：\n"
+            "- 巴哈姆特原神哈啦板: https://forum.gamer.com.tw/A.php?bsn=36730\n"
+            "- 特玩網原神專區: http://www.te5.com/yuanshen/"
         )
         
         ai_config = types.GenerateContentConfig(
@@ -145,16 +178,13 @@ def webhook():
         )
         
         try:
-            # 3. 丟給 Gemini 產生回應
+            # 5. 送給 Gemini 生成最終的回應
             response = client.models.generate_content(
                 model='gemini-3.1-flash-lite',
                 contents=user_query,
                 config=ai_config,
             )
-            if response.text:
-                info = response.text
-            else:
-                info = "抱歉，派蒙現在沒辦法處理這個問題，請稍後再試。"
+            info = response.text if response.text else "抱歉，派蒙現在沒抓到數據，請稍後再試。"
         except Exception as e:
             info = f"發生錯誤: {str(e)}"
             
